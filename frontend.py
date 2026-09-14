@@ -1,940 +1,479 @@
-# NOTE - THAT THE FRONTEND IS A AI CREATED AND FORMATED BY ME AS I AM STILL LEARNING FRONTEND
-
-
-
-
-import tkinter as tk
-from tkinter import font as tkfont
+import sys
 import threading
+import time
 import math
-import random
+from main import listen, handle_prompt, speak
 
-from main import listen, process_prompt, speak
-
-
-# ===============================================================
-# FRIDAY // OPTIMIZED SCI-FI INTERFACE
-# Designed to stay smooth on low-end hardware.
-# ===============================================================
-
-BG = "#05070B"
-PANEL = "#0B1018"
-PANEL_2 = "#101722"
-
-CYAN = "#49D9FF"
-CYAN_DIM = "#17677A"
-WHITE = "#EAF7FF"
-TEXT_DIM = "#718496"
-GREEN = "#55E6A5"
-AMBER = "#FFCA62"
-PURPLE = "#8B5CFF"
-RED = "#FF5D6C"
-GRID = "#0D1C29"
-
-STATE_COLORS = {
-    "idle": CYAN,
-    "listening": GREEN,
-    "thinking": AMBER,
-    "speaking": PURPLE,
-    "error": RED,
-}
-
-STATE_HINTS = {
-    "idle": "SYSTEM READY  •  CLICK CORE TO SPEAK",
-    "listening": "AUDIO INPUT ACTIVE  •  LISTENING",
-    "thinking": "NEURAL CORE PROCESSING  •  STAND BY",
-    "speaking": "VOICE OUTPUT ACTIVE  •  FRIDAY SPEAKING",
-    "error": "SYSTEM ERROR  •  CHECK TERMINAL",
-}
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QRadialGradient
+from PyQt6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QPushButton,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 
-class FridayUI:
-    def __init__(self, root):
-        self.root = root
-        self.state = "idle"
-
-        # One lightweight animation loop instead of redrawing
-        # hundreds of canvas objects every frame.
+class CoreWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.state = "IDLE"
         self.phase = 0.0
+        self.setMinimumSize(420, 420)
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.animate)
+        self.timer.start(30)
+
+    def set_state(self, state):
+        self.state = state.upper()
+        self.update()
+
+    def animate(self):
+        self.phase += 0.035
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        cx = self.width() / 2
+        cy = self.height() / 2
+        base_radius = min(self.width(), self.height()) * 0.19
+
+        colors = {
+            "IDLE": QColor("#49D9FF"),
+            "LISTENING": QColor("#55E6A5"),
+            "THINKING": QColor("#FFCA62"),
+            "SPEAKING": QColor("#8B5CFF"),
+            "ERROR": QColor("#FF5D6C"),
+        }
+
+        color = colors.get(self.state, colors["IDLE"])
+
+        # Background glow
+        gradient = QRadialGradient(cx, cy, base_radius * 3.2)
+        glow = QColor(color)
+        glow.setAlpha(70)
+        gradient.setColorAt(0.0, glow)
+        glow2 = QColor(color)
+        glow2.setAlpha(0)
+        gradient.setColorAt(1.0, glow2)
+
+        painter.setBrush(gradient)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(
+            int(cx - base_radius * 3.2),
+            int(cy - base_radius * 3.2),
+            int(base_radius * 6.4),
+            int(base_radius * 6.4),
+        )
+
+        # Animated rings
+        for i in range(4):
+            radius = base_radius + i * 30 + math.sin(self.phase + i) * 5
+
+            pen = QPen(color)
+            pen.setWidth(2 if i < 2 else 1)
+            pen.setColor(QColor(color.red(), color.green(), color.blue(),
+                                max(45, 150 - i * 30)))
+
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+
+            painter.drawEllipse(
+                int(cx - radius),
+                int(cy - radius),
+                int(radius * 2),
+                int(radius * 2),
+            )
+
+        # Rotating scanner arc
+        pen = QPen(color)
+        pen.setWidth(4)
+        painter.setPen(pen)
+
+        start_angle = int((self.phase * 180 / math.pi) * 16)
+        painter.drawArc(
+            int(cx - base_radius * 2.0),
+            int(cy - base_radius * 2.0),
+            int(base_radius * 4.0),
+            int(base_radius * 4.0),
+            start_angle,
+            95 * 16,
+        )
+
+        # Core
+        core_gradient = QRadialGradient(cx, cy, base_radius)
+        core_gradient.setColorAt(0.0, QColor("#EAF7FF"))
+        core_gradient.setColorAt(0.18, color)
+        dark = QColor(color)
+        dark.setAlpha(80)
+        core_gradient.setColorAt(1.0, dark)
+
+        painter.setBrush(core_gradient)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(
+            int(cx - base_radius),
+            int(cy - base_radius),
+            int(base_radius * 2),
+            int(base_radius * 2),
+        )
+
+        # Center label
+        painter.setPen(QColor("#EAF7FF"))
+        painter.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        text_rect = painter.boundingRect(
+            int(cx - 100), int(cy - 20), 200, 40,
+            Qt.AlignmentFlag.AlignCenter,
+            "FRIDAY",
+        )
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, "FRIDAY")
+
+
+class Worker(QObject):
+    status = pyqtSignal(str)
+    user_text = pyqtSignal(str)
+    friday_text = pyqtSignal(str)
+    finished = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
         self.running = True
 
-        self._create_fonts()
-
-        root.title("FRIDAY // AI CORE")
-        root.geometry("1366x768")
-        root.minsize(1000, 650)
-        root.configure(bg=BG)
-
+    def run(self):
         try:
-            root.state("zoomed")
-        except tk.TclError:
-            pass
+            while self.running:
+                self.status.emit("LISTENING")
 
-        self._build_header()
-        self._build_main()
-        self._build_footer()
+                prompt = listen()
 
-        self._create_static_background()
-        self._create_core_objects()
+                if not self.running:
+                    break
 
-        # ~20 FPS. Much lighter than the previous 30+ FPS redraw.
-        self.animate()
+                if not prompt:
+                    continue
 
-        root.protocol("WM_DELETE_WINDOW", self.close)
+                self.user_text.emit(prompt)
 
-    # -----------------------------------------------------------
-    # Fonts
-    # -----------------------------------------------------------
-    def _create_fonts(self):
-        self.font_title = tkfont.Font(
-            family="Segoe UI", size=19, weight="bold"
-        )
-        self.font_small = tkfont.Font(
-            family="Consolas", size=9
-        )
-        self.font_mono = tkfont.Font(
-            family="Consolas", size=10, weight="bold"
-        )
-        self.font_body = tkfont.Font(
-            family="Segoe UI", size=11
-        )
-        self.font_big = tkfont.Font(
-            family="Segoe UI", size=24, weight="bold"
-        )
+                self.status.emit("THINKING")
 
-    # -----------------------------------------------------------
-    # Header
-    # -----------------------------------------------------------
-    def _build_header(self):
-        header = tk.Frame(self.root, bg=BG, height=72)
-        header.pack(fill="x", side="top")
-        header.pack_propagate(False)
+                answer = handle_prompt(prompt)
 
-        left = tk.Frame(header, bg=BG)
-        left.pack(side="left", padx=30, pady=17)
+                self.friday_text.emit(answer)
 
-        tk.Label(
-            left, text="FRIDAY",
-            font=self.font_title,
-            fg=WHITE, bg=BG
-        ).pack(side="left")
+                self.status.emit("SPEAKING")
 
-        tk.Label(
-            left,
-            text="  //  ARTIFICIAL INTELLIGENCE CORE",
-            font=self.font_small,
-            fg=CYAN, bg=BG
-        ).pack(side="left", pady=(7, 0))
+                speak(answer)
 
-        right = tk.Frame(header, bg=BG)
-        right.pack(side="right", padx=30)
+                # After speaking, automatically return to listening.
+                self.status.emit("LISTENING")
 
-        self.system_label = tk.Label(
-            right,
-            text="SYSTEM ONLINE",
-            font=self.font_mono,
-            fg=GREEN, bg=BG
-        )
-        self.system_label.pack(side="right")
+        except Exception as error:
+            print(f"FRIDAY error: {error}")
+            self.status.emit("ERROR")
 
-        self.system_dot = tk.Canvas(
-            right, width=14, height=14,
-            bg=BG, highlightthickness=0
-        )
-        self.system_dot.create_oval(
-            3, 3, 11, 11,
-            fill=GREEN, outline=""
-        )
-        self.system_dot.pack(side="right", padx=(0, 9))
+        self.finished.emit()
 
-        tk.Frame(
-            self.root, bg=CYAN_DIM, height=1
-        ).pack(fill="x")
+    def stop(self):
+        self.running = False
 
-    # -----------------------------------------------------------
-    # Main layout
-    # -----------------------------------------------------------
-    def _build_main(self):
-        self.main = tk.Frame(self.root, bg=BG)
-        self.main.pack(fill="both", expand=True)
 
-        self.left_hud = tk.Frame(
-            self.main, bg=BG, width=245
-        )
-        self.left_hud.pack(
-            side="left", fill="y",
-            padx=(24, 5), pady=24
-        )
-        self.left_hud.pack_propagate(False)
-        self._build_left_hud()
+class FridayUI(QMainWindow):
+    def __init__(self):
+        super().__init__()
 
-        self.center = tk.Frame(self.main, bg=BG)
-        self.center.pack(
-            side="left", fill="both", expand=True,
-            padx=8, pady=18
-        )
-        self._build_core()
+        self.setWindowTitle("FRIDAY AI")
+        self.setMinimumSize(1100, 700)
+        self.resize(1280, 760)
 
-        self.right_hud = tk.Frame(
-            self.main, bg=BG, width=285
-        )
-        self.right_hud.pack(
-            side="right", fill="y",
-            padx=(5, 24), pady=24
-        )
-        self.right_hud.pack_propagate(False)
-        self._build_right_hud()
+        self.worker = None
+        self.worker_thread = None
 
-    # -----------------------------------------------------------
-    # Panel helper
-    # -----------------------------------------------------------
-    def _panel(self, parent, title, height):
-        frame = tk.Frame(
-            parent,
-            bg=PANEL,
-            height=height,
-            highlightbackground="#142331",
-            highlightthickness=1
-        )
-        frame.pack(fill="x", pady=(0, 14))
-        frame.pack_propagate(False)
+        self.build_ui()
+        self.start_voice_thread()
 
-        tk.Label(
-            frame,
-            text=title,
-            font=self.font_small,
-            fg=CYAN, bg=PANEL,
-            anchor="w"
-        ).pack(
-            fill="x", padx=14, pady=(11, 8)
-        )
+    def build_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
 
-        tk.Frame(
-            frame, bg="#132331", height=1
-        ).pack(fill="x")
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(18, 18, 18, 14)
+        main_layout.setSpacing(12)
 
-        return frame
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #05070B;
+                color: #EAF7FF;
+                font-family: "Segoe UI";
+            }
 
-    # -----------------------------------------------------------
-    # Left HUD
-    # -----------------------------------------------------------
-    def _build_left_hud(self):
-        panel = self._panel(
-            self.left_hud, "CORE STATUS", 155
-        )
+            QFrame#panel {
+                background-color: #0B1018;
+                border: 1px solid #162431;
+                border-radius: 10px;
+            }
 
-        self.status_text = tk.Label(
-            panel,
-            text="IDLE",
-            font=self.font_big,
-            fg=CYAN, bg=PANEL
-        )
-        self.status_text.pack(pady=(14, 2))
+            QLabel#title {
+                color: #49D9FF;
+                font-size: 22px;
+                font-weight: bold;
+                letter-spacing: 2px;
+            }
 
-        self.status_hint = tk.Label(
-            panel,
-            text="READY",
-            font=self.font_small,
-            fg=TEXT_DIM, bg=PANEL
-        )
-        self.status_hint.pack()
+            QLabel#status {
+                color: #55E6A5;
+                font-size: 13px;
+                font-weight: bold;
+            }
 
-        panel2 = self._panel(
-            self.left_hud, "SYSTEM TELEMETRY", 190
-        )
+            QLabel#section {
+                color: #49D9FF;
+                font-size: 12px;
+                font-weight: bold;
+            }
 
-        for name, value in [
-            ("AUDIO", "READY"),
-            ("NEURAL", "ONLINE"),
-            ("VOICE", "ONLINE"),
-            ("MEMORY", "JSON"),
-            ("CORE", "ACTIVE"),
+            QTextEdit {
+                background-color: #070B11;
+                border: 1px solid #162431;
+                border-radius: 8px;
+                padding: 10px;
+                color: #B9CBD8;
+                font-size: 12px;
+            }
+
+            QLineEdit {
+                background-color: #070B11;
+                border: 1px solid #1D3442;
+                border-radius: 7px;
+                padding: 10px;
+                color: #EAF7FF;
+            }
+
+            QPushButton {
+                background-color: #0D1C29;
+                border: 1px solid #17677A;
+                border-radius: 7px;
+                padding: 9px 16px;
+                color: #49D9FF;
+                font-weight: bold;
+            }
+
+            QPushButton:hover {
+                background-color: #102938;
+            }
+        """)
+
+        # Header
+        header = QFrame()
+        header.setObjectName("panel")
+        header_layout = QHBoxLayout(header)
+
+        title = QLabel("F.R.I.D.A.Y")
+        title.setObjectName("title")
+
+        subtitle = QLabel("PERSONAL AI ASSISTANT")
+        subtitle.setStyleSheet("color: #718496; font-size: 10px;")
+
+        self.status_label = QLabel("● SYSTEM ONLINE")
+        self.status_label.setObjectName("status")
+
+        header_layout.addWidget(title)
+        header_layout.addWidget(subtitle)
+        header_layout.addStretch()
+        header_layout.addWidget(self.status_label)
+
+        main_layout.addWidget(header)
+
+        # Main area
+        content = QHBoxLayout()
+        content.setSpacing(12)
+
+        # Left panel
+        left = QFrame()
+        left.setObjectName("panel")
+        left_layout = QVBoxLayout(left)
+
+        section = QLabel("SYSTEM STATUS")
+        section.setObjectName("section")
+        left_layout.addWidget(section)
+
+        for text in [
+            "● VOICE INPUT       ONLINE",
+            "● GEMINI CORE       ONLINE",
+            "● TEXT TO SPEECH    ONLINE",
+            "● CONVERSATION      ACTIVE",
+            "● OS CONTROL        READY",
+            "● EMAIL SYSTEM      READY",
         ]:
-            self._telemetry_row(panel2, name, value)
+            label = QLabel(text)
+            label.setStyleSheet("color: #718496; padding: 7px 2px;")
+            left_layout.addWidget(label)
 
-        panel3 = self._panel(
-            self.left_hud, "INTERFACE", 135
+        left_layout.addStretch()
+
+        hint = QLabel("ALWAYS LISTENING\n\nSpeak naturally.\nFRIDAY will respond.")
+        hint.setStyleSheet("color: #49D9FF; font-size: 12px;")
+        left_layout.addWidget(hint)
+
+        content.addWidget(left, 1)
+
+        # Center
+        center = QFrame()
+        center.setObjectName("panel")
+        center_layout = QVBoxLayout(center)
+
+        core_title = QLabel("FRIDAY NEURAL CORE")
+        core_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        core_title.setObjectName("section")
+
+        self.core = CoreWidget()
+        center_layout.addWidget(core_title)
+        center_layout.addWidget(self.core, 1)
+
+        self.state_label = QLabel("SYSTEM READY • ALWAYS LISTENING")
+        self.state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.state_label.setStyleSheet(
+            "color: #718496; font-size: 11px; padding: 8px;"
         )
 
-        tk.Label(
-            panel3,
-            text="CLICK THE CORE",
-            font=self.font_mono,
-            fg=WHITE, bg=PANEL
-        ).pack(pady=(17, 5))
+        center_layout.addWidget(self.state_label)
+        content.addWidget(center, 2)
 
-        tk.Label(
-            panel3,
-            text="Speak naturally.\nFriday will respond.",
-            font=self.font_small,
-            fg=TEXT_DIM, bg=PANEL,
-            justify="center"
-        ).pack()
+        # Right panel
+        right = QFrame()
+        right.setObjectName("panel")
+        right_layout = QVBoxLayout(right)
 
-    def _telemetry_row(self, parent, name, value):
-        row = tk.Frame(parent, bg=PANEL)
-        row.pack(fill="x", padx=14, pady=5)
+        activity_title = QLabel("FRIDAY ACTIVITY")
+        activity_title.setObjectName("section")
+        right_layout.addWidget(activity_title)
 
-        tk.Label(
-            row, text=name,
-            font=self.font_small,
-            fg=TEXT_DIM, bg=PANEL
-        ).pack(side="left")
+        self.activity = QTextEdit()
+        self.activity.setReadOnly(True)
+        right_layout.addWidget(self.activity, 1)
 
-        tk.Label(
-            row, text=value,
-            font=self.font_small,
-            fg=GREEN, bg=PANEL
-        ).pack(side="right")
+        content.addWidget(right, 1)
 
-    # -----------------------------------------------------------
-    # Core
-    # -----------------------------------------------------------
-    def _build_core(self):
-        self.core_canvas = tk.Canvas(
-            self.center,
-            bg=BG,
-            highlightthickness=0,
-            cursor="hand2"
+        main_layout.addLayout(content, 1)
+
+        # Bottom input
+        bottom = QFrame()
+        bottom.setObjectName("panel")
+        bottom_layout = QHBoxLayout(bottom)
+
+        self.input_box = QLineEdit()
+        self.input_box.setPlaceholderText("Type a command to FRIDAY...")
+        self.input_box.returnPressed.connect(self.send_text_command)
+
+        send_button = QPushButton("SEND")
+        send_button.clicked.connect(self.send_text_command)
+
+        bottom_layout.addWidget(self.input_box, 1)
+        bottom_layout.addWidget(send_button)
+
+        main_layout.addWidget(bottom)
+
+        footer = QLabel(
+            "MIC • ALWAYS LISTENING        GEMINI • CONNECTED        "
+            "OS • READY        MAIL • READY"
         )
-        self.core_canvas.pack(fill="both", expand=True)
+        footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        footer.setStyleSheet("color: #17677A; font-size: 10px;")
 
-        self.core_canvas.bind(
-            "<ButtonPress-1>",
-            self._on_core_press
-        )
-        self.core_canvas.bind(
-            "<ButtonRelease-1>",
-            self.on_core_release
-        )
+        main_layout.addWidget(footer)
 
-    def _create_static_background(self):
-        canvas = self.core_canvas
-
-        # Static grid. It does NOT get redrawn every frame.
-        width = max(canvas.winfo_width(), 700)
-        height = max(canvas.winfo_height(), 500)
-
-        for y in range(35, height, 55):
-            canvas.create_line(
-                0, y, width, y,
-                fill=GRID, width=1,
-                tags="static"
-            )
-
-        for x in range(30, width, 80):
-            canvas.create_line(
-                x, 0, x, height,
-                fill="#08131D", width=1,
-                tags="static"
-            )
-
-        # A few static stars instead of 95 animated stars.
-        random.seed(7)
-
-        for _ in range(35):
-            x = random.randint(20, width - 20)
-            y = random.randint(20, height - 20)
-            r = random.choice([1, 1, 1, 2])
-
-            canvas.create_oval(
-                x-r, y-r, x+r, y+r,
-                fill="#1B4354",
-                outline="",
-                tags="static"
-            )
-
-    def _create_core_objects(self):
-        c = self.core_canvas
-
-        # These objects are created ONCE and only moved/configured.
-        self.core_items = {}
-
-        for i in range(3):
-            self.core_items[f"outer{i}"] = c.create_oval(
-                0, 0, 0, 0,
-                outline=CYAN_DIM,
-                width=1,
-                tags="core"
-            )
-
-        for i in range(2):
-            self.core_items[f"arc{i}"] = c.create_arc(
-                0, 0, 0, 0,
-                start=0, extent=90,
-                style="arc",
-                outline=CYAN,
-                width=2,
-                tags="core"
-            )
-
-        self.core_items["sphere"] = c.create_oval(
-            0, 0, 0, 0,
-            fill="#08121B",
-            outline=CYAN,
-            width=2,
-            tags="core"
-        )
-
-        self.core_items["inner1"] = c.create_oval(
-            0, 0, 0, 0,
-            outline="#12394A",
-            width=1,
-            tags="core"
-        )
-
-        self.core_items["inner2"] = c.create_oval(
-            0, 0, 0, 0,
-            outline="#12394A",
-            width=1,
-            tags="core"
-        )
-
-        self.core_items["reactor"] = c.create_oval(
-            0, 0, 0, 0,
-            fill="#0D1B25",
-            outline=CYAN,
-            width=2,
-            tags="core"
-        )
-
-        self.core_items["glow"] = c.create_oval(
-            0, 0, 0, 0,
-            fill=CYAN,
-            outline="",
-            tags="core"
-        )
-
-        self.core_items["title"] = c.create_text(
-            0, 0,
-            text="FRIDAY",
-            font=self.font_mono,
-            fill=WHITE,
-            tags="core"
-        )
-
-        self.core_items["hint"] = c.create_text(
-            0, 0,
-            text="SYSTEM READY",
-            font=self.font_small,
-            fill=CYAN,
-            tags="core"
-        )
-
-        # Eight particles, also created only once.
-        self.particles = []
-
-        for _ in range(8):
-            item = c.create_oval(
-                0, 0, 0, 0,
-                fill=CYAN,
-                outline="",
-                tags="core"
-            )
-            self.particles.append(item)
-
-    def _update_core(self):
-        c = self.core_canvas
-
-        width = max(c.winfo_width(), 700)
-        height = max(c.winfo_height(), 500)
-
-        cx = width / 2
-        cy = height / 2 - 10
-
-        color = STATE_COLORS.get(
-            self.state, CYAN
-        )
-
-        pulse = (
-            math.sin(self.phase * 2.0) + 1
-        ) / 2
-
-        if self.state == "idle":
-            energy = 7
-        elif self.state == "listening":
-            energy = 17
-        elif self.state == "thinking":
-            energy = 12
-        elif self.state == "speaking":
-            energy = 20
-        else:
-            energy = 8
-
-        # Three breathing rings.
-        for i in range(3):
-            radius = (
-                155 + i * 27
-                + pulse * energy
-            )
-
-            c.coords(
-                self.core_items[f"outer{i}"],
-                cx-radius, cy-radius,
-                cx+radius, cy+radius
-            )
-
-            c.itemconfig(
-                self.core_items[f"outer{i}"],
-                outline=(
-                    CYAN_DIM
-                    if i < 2
-                    else "#102431"
-                )
-            )
-
-        # Two rotating arcs.
-        for i in range(2):
-            radius = 145 + i * 22
-            start = (
-                self.phase * (65 + i * 25)
-                + i * 180
-            ) % 360
-
-            c.coords(
-                self.core_items[f"arc{i}"],
-                cx-radius,
-                cy-radius * 0.48,
-                cx+radius,
-                cy+radius * 0.48
-            )
-
-            c.itemconfig(
-                self.core_items[f"arc{i}"],
-                start=start,
-                extent=95,
-                outline=color
-            )
-
-        # Main sphere.
-        radius = 103 + pulse * energy * 0.3
-
-        c.coords(
-            self.core_items["sphere"],
-            cx-radius, cy-radius,
-            cx+radius, cy+radius
-        )
-
-        c.itemconfig(
-            self.core_items["sphere"],
-            outline=color
-        )
-
-        # Two latitude-style arcs.
-        r = radius
-
-        c.coords(
-            self.core_items["inner1"],
-            cx-r,
-            cy-35,
-            cx+r,
-            cy+35
-        )
-
-        c.coords(
-            self.core_items["inner2"],
-            cx-55,
-            cy-r,
-            cx+55,
-            cy+r
-        )
-
-        # Reactor.
-        rr = 30 + pulse * 5
-
-        c.coords(
-            self.core_items["reactor"],
-            cx-rr, cy-rr,
-            cx+rr, cy+rr
-        )
-
-        c.itemconfig(
-            self.core_items["reactor"],
-            outline=color
-        )
-
-        # Bright center.
-        glow = 11 + pulse * 4
-
-        c.coords(
-            self.core_items["glow"],
-            cx-glow, cy-glow,
-            cx+glow, cy+glow
-        )
-
-        c.itemconfig(
-            self.core_items["glow"],
-            fill=color
-        )
-
-        # Orbiting particles.
-        for i, item in enumerate(self.particles):
-            angle = (
-                self.phase * 0.8
-                + i * math.pi / 4
-            )
-
-            orbit = 142 + (i % 2) * 22
-
-            x = cx + math.cos(angle) * orbit
-            y = cy + math.sin(angle) * orbit * 0.58
-
-            size = 2 if i % 2 else 3
-
-            c.coords(
-                item,
-                x-size, y-size,
-                x+size, y+size
-            )
-
-            c.itemconfig(
-                item,
-                fill=color
-            )
-
-        c.coords(
-            self.core_items["title"],
-            cx, cy + 132
-        )
-
-        c.coords(
-            self.core_items["hint"],
-            cx, cy + 151
-        )
-
-        c.itemconfig(
-            self.core_items["hint"],
-            text=self.state.upper(),
-            fill=color
-        )
-
-    # -----------------------------------------------------------
-    # Lightweight neural activity
-    # -----------------------------------------------------------
-    def _build_right_hud(self):
-        panel = self._panel(
-            self.right_hud, "NEURAL ACTIVITY", 150
-        )
-
-        self.activity_canvas = tk.Canvas(
-            panel,
-            bg=PANEL,
-            height=95,
-            highlightthickness=0
-        )
-        self.activity_canvas.pack(
-            fill="x", padx=10, pady=10
-        )
-
-        self.activity_lines = []
-
-        # Only 30 bars, created once.
-        for _ in range(30):
-            item = self.activity_canvas.create_line(
-                0, 47, 0, 47,
-                fill=CYAN,
-                width=2
-            )
-            self.activity_lines.append(item)
-
-        panel2 = self._panel(
-            self.right_hud, "LAST RESPONSE", 225
-        )
-
-        self.response_label = tk.Label(
-            panel2,
-            text="Awaiting command...",
-            font=self.font_body,
-            fg=TEXT_DIM,
-            bg=PANEL,
-            wraplength=240,
-            justify="left",
-            anchor="nw"
-        )
-        self.response_label.pack(
-            fill="both", expand=True,
-            padx=14, pady=14
-        )
-
-        panel3 = self._panel(
-            self.right_hud, "CONTROLS", 135
-        )
-
-        self.clear_btn = tk.Button(
-            panel3,
-            text="CLEAR TRANSCRIPT",
-            font=self.font_small,
-            fg=WHITE,
-            bg=PANEL_2,
-            activebackground="#172638",
-            activeforeground=CYAN,
-            relief="flat",
-            bd=0,
-            cursor="hand2",
-            command=self.clear_transcript
-        )
-        self.clear_btn.pack(
-            fill="x", padx=14,
-            pady=(15, 7), ipady=7
-        )
-
-        tk.Label(
-            panel3,
-            text="Conversation saved to JSON.",
-            font=self.font_small,
-            fg=TEXT_DIM,
-            bg=PANEL
-        ).pack()
-
-    def _update_activity(self):
-        width = max(
-            self.activity_canvas.winfo_width(),
-            230
-        )
-
-        color = STATE_COLORS.get(
-            self.state, CYAN
-        )
-
-        if self.state == "idle":
-            amplitude = 4
-        elif self.state == "listening":
-            amplitude = 17
-        elif self.state == "thinking":
-            amplitude = 10
-        elif self.state == "speaking":
-            amplitude = 23
-        else:
-            amplitude = 5
-
-        bar_width = width / len(self.activity_lines)
-
-        for i, item in enumerate(self.activity_lines):
-            x = i * bar_width + bar_width / 2
-
-            value = math.sin(
-                self.phase * 4 + i * 0.55
-            )
-
-            value += 0.25 * math.sin(
-                self.phase * 7 + i
-            )
-
-            y = 47 + value * amplitude
-
-            self.activity_canvas.coords(
-                item,
-                x, 47,
-                x, y
-            )
-
-            self.activity_canvas.itemconfig(
-                item,
-                fill=color
-            )
-
-    # -----------------------------------------------------------
-    # Footer
-    # -----------------------------------------------------------
-    def _build_footer(self):
-        footer = tk.Frame(
-            self.root,
-            bg=BG,
-            height=54
-        )
-        footer.pack(fill="x", side="bottom")
-        footer.pack_propagate(False)
-
-        tk.Frame(
-            footer, bg=CYAN_DIM, height=1
-        ).pack(fill="x")
-
-        tk.Label(
-            footer,
-            text=(
-                "FRIDAY CORE  •  GEMINI  •  "
-                "SPEECH RECOGNITION  •  PYTTSX3"
-            ),
-            font=self.font_small,
-            fg=TEXT_DIM,
-            bg=BG
-        ).pack(side="left", padx=30, pady=17)
-
-        self.footer_status = tk.Label(
-            footer,
-            text="SYSTEM READY",
-            font=self.font_small,
-            fg=GREEN,
-            bg=BG
-        )
-        self.footer_status.pack(
-            side="right", padx=30
-        )
-
-    # -----------------------------------------------------------
-    # Animation loop
-    # -----------------------------------------------------------
-    def animate(self):
-        if not self.running:
-            return
-
-        self.phase += 0.055
-
-        self._update_core()
-        self._update_activity()
-
-        # 50 ms = 20 FPS.
-        # Much lighter on CPU/GPU than constantly creating/deleting
-        # hundreds of Canvas objects.
-        self.root.after(50, self.animate)
-
-    # -----------------------------------------------------------
-    # Status
-    # -----------------------------------------------------------
-    def set_status(self, state):
-        self.state = state
-
-        color = STATE_COLORS.get(
-            state, CYAN
-        )
-
-        self.status_text.config(
-            text=state.upper(),
-            fg=color
-        )
-
-        self.status_hint.config(
-            text=STATE_HINTS.get(state, ""),
-            fg=color
-        )
-
-        self.footer_status.config(
-            text=STATE_HINTS.get(state, ""),
-            fg=color
-        )
-
-        if state == "error":
-            self.system_label.config(
-                text="SYSTEM ALERT",
-                fg=RED
-            )
-        else:
-            self.system_label.config(
-                text="SYSTEM ONLINE",
-                fg=GREEN
-            )
-
-    # -----------------------------------------------------------
-    # Interaction
-    # -----------------------------------------------------------
-    def _on_core_press(self, event=None):
-        self.set_status("listening")
-
-    def on_core_release(self, event=None):
-        worker = threading.Thread(
-            target=self.process_command,
+    def start_voice_thread(self):
+        self.worker_thread = threading.Thread(
+            target=self.voice_loop,
             daemon=True
         )
-        worker.start()
+        self.worker_thread.start()
 
-    # -----------------------------------------------------------
-    # Backend
-    # -----------------------------------------------------------
-    def process_command(self):
-        try:
-            self.root.after(
-                0, self.set_status, "listening"
-            )
+    def voice_loop(self):
+        worker = Worker()
+        self.worker = worker
 
-            prompt = listen()
+        worker.status.connect(self.update_status)
+        worker.user_text.connect(self.show_user)
+        worker.friday_text.connect(self.show_friday)
 
-            if not prompt:
-                self.root.after(
-                    0, self.set_status, "idle"
-                )
-                return
+        worker.run()
 
-            self.root.after(
-                0,
-                self.append_transcript,
-                "you",
-                prompt
-            )
+    def update_status(self, state):
+        self.core.set_state(state)
 
-            self.root.after(
-                0, self.set_status, "thinking"
-            )
+        hints = {
+            "LISTENING": "AUDIO INPUT ACTIVE • LISTENING",
+            "THINKING": "NEURAL CORE PROCESSING • STAND BY",
+            "SPEAKING": "VOICE OUTPUT ACTIVE • FRIDAY SPEAKING",
+            "ERROR": "SYSTEM ERROR • CHECK TERMINAL",
+        }
 
-            # Gemini + conversation JSON storage
-            answer = process_prompt(prompt)
-
-            self.root.after(
-                0,
-                self.append_transcript,
-                "friday",
-                answer
-            )
-
-            self.root.after(
-                0,
-                self.update_response,
-                answer
-            )
-
-            self.root.after(
-                0, self.set_status, "speaking"
-            )
-
-            speak(answer)
-
-            self.root.after(
-                0, self.set_status, "idle"
-            )
-
-        except Exception as e:
-            print(f"Friday error: {e}")
-
-            self.root.after(
-                0, self.set_status, "error"
-            )
-
-            self.root.after(
-                0,
-                self.update_response,
-                "Sorry, something went wrong."
-            )
-
-    # -----------------------------------------------------------
-    # Transcript / response
-    # -----------------------------------------------------------
-    def append_transcript(self, who, text):
-        # Keep the main UI lightweight: latest conversation is shown
-        # in the response panel. The full conversation remains in JSON.
-        if who == "friday":
-            self.update_response(text)
-
-    def update_response(self, text):
-        self.response_label.config(
-            text=text,
-            fg=WHITE
+        state = state.upper()
+        self.state_label.setText(
+            hints.get(state, "SYSTEM READY • ALWAYS LISTENING")
         )
 
-    def clear_transcript(self):
-        self.response_label.config(
-            text="Awaiting command...",
-            fg=TEXT_DIM
-        )
-        self.set_status("idle")
+        status_colors = {
+            "LISTENING": "#55E6A5",
+            "THINKING": "#FFCA62",
+            "SPEAKING": "#8B5CFF",
+            "ERROR": "#FF5D6C",
+        }
 
-    # -----------------------------------------------------------
-    # Close
-    # -----------------------------------------------------------
-    def close(self):
-        self.running = False
-        self.root.destroy()
+        color = status_colors.get(state, "#49D9FF")
+        self.status_label.setStyleSheet(
+            f"color: {color}; font-size: 13px; font-weight: bold;"
+        )
+
+    def show_user(self, text):
+        self.activity.append(f"<b style='color:#55E6A5'>YOU:</b> {text}")
+
+    def show_friday(self, text):
+        safe_text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        self.activity.append(
+            f"<b style='color:#49D9FF'>FRIDAY:</b> {safe_text}"
+        )
+
+    def send_text_command(self):
+        text = self.input_box.text().strip()
+
+        if not text:
+            return
+
+        self.input_box.clear()
+        self.show_user(text)
+        self.update_status("THINKING")
+
+        def process():
+            try:
+                answer = handle_prompt(text)
+                self.show_friday(answer)
+                self.update_status("SPEAKING")
+                speak(answer)
+                self.update_status("LISTENING")
+            except Exception as error:
+                print(f"Text command error: {error}")
+                self.update_status("ERROR")
+
+        threading.Thread(target=process, daemon=True).start()
+
+    def closeEvent(self, event):
+        if self.worker:
+            self.worker.stop()
+
+        event.accept()
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = FridayUI(root)
-    root.mainloop()
+    app = QApplication(sys.argv)
+    window = FridayUI()
+    window.show()
+    sys.exit(app.exec())
